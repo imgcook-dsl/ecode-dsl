@@ -116,7 +116,8 @@ module.exports = function(schema, option) {
       if (set2Str) {
         set2Str = `{${set2Str}}`;
       }
-      importStrings.push(`import ${set1Str} ${dot} ${set2Str} from '${packageName}'`);
+      //importStrings.push(`import ${set1Str} ${dot} ${set2Str} from '${packageName}'`);
+      importStrings.push(`const { ${packageName.replace('/', '').replace('@', '')} } = window;`);
     }
     return importStrings.concat(subImports);
   }
@@ -442,7 +443,7 @@ module.exports = function(schema, option) {
         const methods = [];
         const init = [];
         const render = [`render(){ return (`];
-        let classData = [`class ${schema.componentName}_${classes.length} extends Component {`];
+        let classData = [`class ${schema.componentName}_${classes.length} extends React.Component {`];
 
         if (schema.state) {
           states.push(`state = ${toString(schema.state)}`);
@@ -528,13 +529,12 @@ module.exports = function(schema, option) {
         panelValue: prettier.format(`
           'use strict';
 
-          import React, { Component } from 'react';
+          const { React, ecCom, antd } = window;
           ${importStrings.join('\n')}
-          import './style.css';
 
-          ${utils.join('\n')}
           ${classes.join('\n')}
-          export default ${schema.componentName}_0;
+          //发布模块CusEle，作为模块\${appId}的子模块
+          ecodeSDK.setCom('\${appId}', '${schema.componentName}_0', ${schema.componentName}_0);
         `, prettierOpt),
         panelType: 'js',
       },

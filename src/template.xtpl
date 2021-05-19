@@ -1,13 +1,8 @@
 'use strict';
 
-import React, { Component } from 'react';
-
-{{{imports}}}
-
-{{{utils}}}
-
-{{{style}}}
+const { React, ecCom, antd } = window;
 
 {{{classes}}}
 
-{{{exports}}}
+//发布模块CusEle，作为模块${appId}的子模块
+ecodeSDK.setCom('${appId}', 'CusEle', CusEle);
