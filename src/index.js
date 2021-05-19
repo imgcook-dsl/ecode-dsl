@@ -543,9 +543,37 @@ module.exports = function(schema, option) {
         panelValue: prettier.format(generateCss(style), { parser: 'css' }),
         panelType: 'css'
       },
+      // {
+      //   panelName: `style.responsive.css`,
+      //   panelValue: prettier.format(`${generateCss(style, true)}`, { parser: 'css' }),
+      //   panelType: 'css'
+      // },
       {
-        panelName: `style.responsive.css`,
-        panelValue: prettier.format(`${generateCss(style, true)}`, { parser: 'css' }),
+        panelName: `register.js`,
+        panelValue: prettier.format(`
+          const EBASE_ID = 'Custom_1620880111307';
+
+          ecodeSDK.rewritePortalCusEleQueue.push({
+            fn:(params)=>{
+              // console.log('params:',params);
+              const {props,options} = params;
+              if(options.ebaseid === EBASE_ID) {
+                const acParams = {
+                  appId:'\${appId}',
+                  name:'CusEle', //模块名称
+                  params, //参数
+                  isPage:false, //是否是路由页面
+                  noCss:true //是否禁止单独加载css，通常为了减少css数量，css默认前置加载
+                }
+                //异步加载模块\${appId}下的子模块CusEle
+                return ecodeSDK.getAsyncCom(acParams);
+              }
+              return null;
+            },
+            order: 1,
+            desc:'XX 元素'
+          });
+        `),
         panelType: 'css'
       }
     ],
