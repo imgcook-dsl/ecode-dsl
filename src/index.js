@@ -1,8 +1,46 @@
-module.exports = function(schema, option) {
-  const {prettier} = option;
+/**
+ * transform the componentsMap to real Map from compsMap.list as array
+ * @param {*} compsMap 
+ */
+const transComponentsMap = (compsMap = {}) => {
+  if (!compsMap || !Array.isArray(compsMap.list)) {
+    return [];
+  }
+  const list = compsMap.list;
+  return list.reduce((obj, comp) => {
+    const componentName = comp.name;
+    if (!obj[componentName]) {
+      if (comp.dependence) {
+        try {
+          let dependence = typeof comp.dependence === 'string' ? JSON.parse(comp.dependence) : comp.dependence;
+          if (dependence) {
+            comp.packageName = dependence.package;
+            comp.dependence = dependence;
+          }
+          if (!comp.dependenceVersion) {
+            comp.dependenceVersion = '*';
+          }
+          comp.exportName = dependence.export_name;
+          comp.subName = dependence.sub_name;
+          if (/^\d/.test(comp.dependenceVersion)) {
+            comp.dependenceVersion = '^' + comp.dependenceVersion;
+          }
+        } catch (e) {
+          console.log(e);
+        }
+      }
+      obj[componentName] = comp;
+    }
+    return obj;
+  }, {});
+};
 
-  // imports
-  const imports = [];
+module.exports = function(schema, option) {
+  const { _, prettier } = option;
+  componentsMap = transComponentsMap(option.componentsMap);
+  // imports, the key is the package name, the value is a set includes the component objects
+  const imports = new Map();
+  const importsExt = [];
 
   // inline style
   const style = {};
@@ -14,7 +52,9 @@ module.exports = function(schema, option) {
   const classes = [];
 
   // 1vw = width / 100
-  const _w = option.responsive.width / 100;
+  const _w = (option.responsive.width / 100) || 750;
+
+  let pageLock = false;
 
   const isExpression = (value) => {
     return /^\{\{.*\}\}$/.test(value);
@@ -40,38 +80,145 @@ module.exports = function(schema, option) {
     return String(value);
   };
 
-  // convert to responsive unit, such as vw
-  const parseStyle = (style) => {
-    for (let key in style) {
-      switch (key) {
-        case 'fontSize':
-        case 'marginTop':
-        case 'marginBottom':
-        case 'paddingTop':
-        case 'paddingBottom':
-        case 'height':
-        case 'top':
-        case 'bottom':
-        case 'width':
-        case 'maxWidth':
-        case 'left':
-        case 'right':
-        case 'paddingRight':
-        case 'paddingLeft':
-        case 'marginLeft':
-        case 'marginRight':
-        case 'lineHeight':
-        case 'borderBottomRightRadius':
-        case 'borderBottomLeftRadius':
-        case 'borderTopRightRadius':
-        case 'borderTopLeftRadius':
-        case 'borderRadius':
-          style[key] = (parseInt(style[key]) / _w).toFixed(2) + 'vw';
-          break;
+  // flexDirection -> flex-direction
+  const parseCamelToLine = (string) => {
+    return string.split(/(?=[A-Z])/).join('-').toLowerCase();
+  }
+
+  /**
+   * constrcut the import string
+   */
+  const importString = () => {
+    const importStrings = [];
+    const subImports = [];
+    for (const [ packageName, pkgSet ] of imports) {
+      const set1 = new Set(), set2 = new Set();
+      for (const pkg of pkgSet) {
+        let exportName = pkg.exportName;
+        let subName = pkg.subName;
+        let componentName = pkg.name;
+
+        if (pkg.subName) {
+          subImports.push(`const ${componentName} = ${exportName}.${subName};`);
+        }
+        if (componentName !== exportName && !pkg.subName) {
+          exportName = `${exportName} as ${componentName}`;
+        }
+        if (!pkg.dependence.destructuring) {
+          set1.add(exportName);
+        } else {
+          set2.add(exportName);
+        }
+      }
+      const set1Str = [ ...set1 ].join(',');
+      let set2Str = [ ...set2 ].join(',');
+      const dot = set1Str && set2Str ? ',' : '';
+      if (set2Str) {
+        set2Str = `{${set2Str}}`;
+      }
+      importStrings.push(`import ${set1Str} ${dot} ${set2Str} from '${packageName}'`);
+    }
+    return importStrings.concat(subImports);
+  }
+
+  /**
+   * store the components to the 'imports' map which was used
+   * 
+   * @param {*} componentName component name like 'Button'
+   */
+  const generateImport = (componentName) => {
+    // ignore the empty string
+    if (!componentName) {
+      return;
+    }
+    const component = componentsMap[componentName];
+    if (component) {
+      const objSets = imports.get(component.packageName);
+      if (!objSets) {
+        const set = new Set();
+        set.add(component);
+        imports.set(component.packageName, set);
+      } else {
+        objSets.add(component);
+      }
+      return;
+    }
+  };
+
+  // className structure support
+  const generateLess = (schema, style) => {
+    let less = '';
+
+    function walk(json) {
+      if (json.props && json.props.className) {
+        let className = json.props.className;
+        less += `.${className} {`;
+
+        for (let key in style[className]) {
+          less += `${parseCamelToLine(key)}: ${style[className][key]};\n`
+        }
+      }
+      if (json.children && json.children.length > 0 && Array.isArray(json.children)) {
+        json.children.forEach(child => walk(child));
+      }
+
+      if (json.props && json.props.className) {
+        less += '}';
       }
     }
 
-    return style;
+    walk(schema);
+
+    return less;
+  };
+
+  const generateCss = (style, toVW) => {
+    let css = '';
+    Object.keys(style).map((key) => {
+      css +=`.${key}{${formatStyle(style[key], toVW)}}`
+    });
+    return css;
+  }
+
+  // box relative style
+  const boxStyleList = ['fontSize', 'marginTop', 'marginBottom', 'paddingTop', 'paddingBottom', 'height', 'top', 'bottom', 'width', 'maxWidth', 'left', 'right', 'paddingRight', 'paddingLeft', 'marginLeft', 'marginRight', 'lineHeight', 'borderBottomRightRadius', 'borderBottomLeftRadius', 'borderTopRightRadius', 'borderTopLeftRadius', 'borderRadius'];
+  // no unit style
+  const noUnitStyles = ['opacity', 'fontWeight'];
+
+  const formatStyle = (style, toVW) => {
+    const styleData = [];
+    for (let key in style) {
+      let value = style[key];
+      if (boxStyleList.indexOf(key) != -1) {
+        if (toVW) {
+          value = (parseInt(value) / _w).toFixed(2);
+          value = value == 0 ? value : value + 'vw';
+        } else {
+          value = (parseInt(value)).toFixed(2);
+          value = value == 0 ? value : value + 'px';
+        }
+        styleData.push(`${_.kebabCase(key)}: ${value}`);
+      } else if (noUnitStyles.indexOf(key) != -1) {
+        styleData.push(`${_.kebabCase(key)}: ${parseFloat(value)}`);
+      } else {
+        styleData.push(`${_.kebabCase(key)}: ${value}`);
+      }
+    }
+    return styleData.join(';');
+  }
+
+
+  // convert to responsive unit, such as vw
+  const parseStyle = (styles) => {
+    for (let style in styles) {
+      for (let key in styles[style]) {
+        if (boxStyleList.indexOf(key) > 0) {
+          styles[style][key] = (parseInt(styles[style][key]) / _w).toFixed(2) + 'vw';
+        }
+      }
+    }
+
+    return styles;
   }
 
   // parse function, return params and content
@@ -104,6 +251,8 @@ module.exports = function(schema, option) {
     } else if (typeof value === 'function') {
       const {params, content} = parseFunction(value);
       return `(${params}) => {${content}}`;
+    } else {
+      return JSON.stringify(value);
     }
   }
 
@@ -116,8 +265,8 @@ module.exports = function(schema, option) {
 
     switch (action) {
       case 'fetch':
-        if (imports.indexOf(`import {fetch} from whatwg-fetch`) === -1) {
-          imports.push(`import {fetch} from 'whatwg-fetch'`);
+        if (importsExt.indexOf(`import {fetch} from whatwg-fetch`) === -1) {
+          importsExt.push(`import {fetch} from 'whatwg-fetch'`);
         }
         payload = {
           method: method
@@ -125,8 +274,8 @@ module.exports = function(schema, option) {
 
         break;
       case 'jsonp':
-        if (imports.indexOf(`import {fetchJsonp} from fetch-jsonp`) === -1) {
-          imports.push(`import jsonp from 'fetch-jsonp'`);
+        if (importsExt.indexOf(`import {fetchJsonp} from fetch-jsonp`) === -1) {
+          importsExt.push(`import jsonp from 'fetch-jsonp'`);
         }
         break;
     }
@@ -200,22 +349,20 @@ module.exports = function(schema, option) {
   // generate render xml
   const generateRender = (schema) => {
     const type = schema.componentName.toLowerCase();
-    const className = schema.props && schema.props.className;
-    const classString = className ? ` style={styles.${className}}` : '';
-
+    const className = schema.props && schema.props.className || '';
+    const classString = className ? ` className="${className}"` : '';
     if (className) {
-      style[className] = parseStyle(schema.props.style);
+      style[className] = schema.props.style;
     }
 
     let xml;
     let props = '';
 
     Object.keys(schema.props).forEach((key) => {
-      if (['className', 'style', 'text', 'src'].indexOf(key) === -1) {
+      if (['className', 'style', 'text', 'src', 'lines'].indexOf(key) === -1) {
         props += ` ${key}={${parseProps(schema.props[key])}}`;
       }
     })
-
     switch(type) {
       case 'text':
         const innerText = parseProps(schema.props.text, true);
@@ -228,10 +375,24 @@ module.exports = function(schema, option) {
       case 'div':
       case 'page':
       case 'block':
+      case 'component':
         if (schema.children && schema.children.length) {
           xml = `<div${classString}${props}>${transform(schema.children)}</div>`;
         } else {
           xml = `<div${classString}${props} />`;
+        }
+        break;
+      default:
+        if (schema.children && schema.children.length) {
+          xml = `<${schema.componentName}${classString}${props}>${transform(schema.children)}</${schema.componentName}>`;
+        } else {
+          xml = `<${schema.componentName}${classString}${props} />`;
+        }
+
+        const importString = generateImport(schema.componentName);
+
+        if (importString) {
+          imports.push(importString);
         }
         break;
     }
@@ -242,7 +403,7 @@ module.exports = function(schema, option) {
     if (schema.condition) {
       xml = parseCondition(schema.condition, xml);
     }
-    if (schema.loop || schema.condition) {
+    if ((schema.loop || schema.condition )&& !schema.isRoot) {
       xml = `{${xml}}`;
     }
 
@@ -252,15 +413,29 @@ module.exports = function(schema, option) {
   // parse schema
   const transform = (schema) => {
     let result = '';
-
     if (Array.isArray(schema)) {
       schema.forEach((layer) => {
         result += transform(layer);
       });
-    } else {
-      const type = schema.componentName.toLowerCase();
-
-      if (['page', 'block'].indexOf(type) !== -1) {
+    } else if (typeof schema === 'string') {
+      result += schema;
+    } else if (typeof schema === 'object' && typeof schema.componentName === 'string') {
+      // fix the problem of multiple page tags
+      let type = schema.componentName.toLowerCase();
+      let cycleMark = ['block', 'component'].indexOf(type) !== -1;
+      if (pageLock && cycleMark) {
+        type = 'div';
+        cycleMark = false;
+      }
+      if (type === 'page') {
+        if (!pageLock) {
+          pageLock = true;
+          cycleMark = true;
+        } else {
+          type = 'div';
+        }
+      }
+      if (cycleMark) {
         // 容器组件处理: state/method/dataSource/lifeCycle/render
         const states = [];
         const lifeCycles = [];
@@ -334,6 +509,8 @@ module.exports = function(schema, option) {
     });
   }
 
+  schema.isRoot = true
+
   // start parse schema
   transform(schema);
 
@@ -342,7 +519,8 @@ module.exports = function(schema, option) {
     printWidth: 120,
     singleQuote: true
   };
-
+  let importStrings = importString();
+  importStrings = importStrings.concat(importsExt);
   return {
     panelDisplay: [
       {
@@ -351,8 +529,9 @@ module.exports = function(schema, option) {
           'use strict';
 
           import React, { Component } from 'react';
-          ${imports.join('\n')}
-          import styles from './style.js';
+          ${importStrings.join('\n')}
+          import './style.css';
+
           ${utils.join('\n')}
           ${classes.join('\n')}
           export default ${schema.componentName}_0;
@@ -360,9 +539,14 @@ module.exports = function(schema, option) {
         panelType: 'js',
       },
       {
-        panelName: `style.js`,
-        panelValue: prettier.format(`export default ${toString(style)}`, prettierOpt),
-        panelType: 'js'
+        panelName: `style.css`,
+        panelValue: prettier.format(generateCss(style), { parser: 'css' }),
+        panelType: 'css'
+      },
+      {
+        panelName: `style.responsive.css`,
+        panelValue: prettier.format(`${generateCss(style, true)}`, { parser: 'css' }),
+        panelType: 'css'
       }
     ],
     noTemplate: true
